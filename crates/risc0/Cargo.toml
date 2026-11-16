@@ -1,0 +1,15 @@
+[package]
+name = "lichen-risc0"
+description = "RISC Zero 3.1's Groth16 statement checked natively: the verifying key, the receipt claim, the proof's points"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+sha2.workspace = true
+ark-bn254 = "0.5"
+ark-ec = "0.5"
+ark-ff = "0.5"
