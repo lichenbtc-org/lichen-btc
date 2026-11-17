@@ -5,6 +5,7 @@
 
 pub mod adaptor;
 pub mod keys;
+pub mod musig;
 pub mod regtest;
 pub mod script;
 pub mod sighash;

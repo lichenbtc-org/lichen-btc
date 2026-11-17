@@ -3,7 +3,7 @@
 use anyhow::{anyhow, ensure, Result};
 use bitcoin::key::{TweakedPublicKey, XOnlyPublicKey};
 use bitcoin::secp256k1::SECP256K1;
-use bitcoin::taproot::{ControlBlock, LeafVersion, TapLeafHash, TaprootBuilder, TaprootSpendInfo};
+use bitcoin::taproot::{ControlBlock, LeafVersion, TapLeafHash, TapNodeHash, TaprootBuilder, TaprootSpendInfo};
 use bitcoin::{Address, Network, ScriptBuf};
 
 use crate::keys::nums_point;
@@ -64,6 +64,10 @@ impl TapTree {
     }
     pub fn output_key(&self) -> TweakedPublicKey {
         self.info.output_key()
+    }
+    /// The script tree's root, which tweaks the internal key.
+    pub fn merkle_root(&self) -> Option<TapNodeHash> {
+        self.info.merkle_root()
     }
     pub fn script_pubkey(&self) -> ScriptBuf {
         ScriptBuf::new_p2tr_tweaked(self.output_key())
