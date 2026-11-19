@@ -18,7 +18,7 @@
 
 use std::marker::PhantomData;
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context, Result};
 use bitcoin::hashes::{sha256, Hash};
 use bitcoin::opcodes::all::*;
 use bitcoin::opcodes::Opcode;
@@ -189,19 +189,18 @@ impl<H: Chain> WotsSigOf<H> {
         Ok(WotsSigOf { params, hashes, digits })
     }
 
-    /// Rebuild from witness elements in consumption order.
+    /// Rebuild from witness elements in consumption order, each digit read
+    /// as the verify gadget reads it ([`script_digit`]): fails where the
+    /// script fails.
     pub fn from_consumption_order(params: WotsParams, items: &[Vec<u8>]) -> Result<WotsSigOf<H>> {
         let n = params.total_digits() as usize;
+        ensure!(items.len() >= 2 * n, "{} witness elements for {n} digits", items.len());
         let mut digits = vec![0u8; n];
         let mut hashes = Vec::with_capacity(n);
         for i in 0..n {
             let d = &items[2 * (n - 1 - i)];
             let h = &items[2 * (n - 1 - i) + 1];
-            digits[i] = match d.len() {
-                0 => 0,
-                1 => d[0],
-                _ => anyhow::bail!("digit element too long"),
-            };
+            digits[i] = script_digit(d).with_context(|| format!("digit {i}'s element {d:02x?} fails the script"))?;
             let h: H = h[..].try_into().map_err(|_| anyhow::anyhow!("hash element not {} bytes", std::mem::size_of::<H>()))?;
             hashes.push(h);
         }
@@ -223,6 +222,27 @@ impl<H: Chain> WotsPublicOf<H> {
         ensure!(sig.digits[self.params.message_digits as usize..] == checksum_digits(&self.params, msg_digits)[..], "checksum mismatch");
         Ok(sig.message())
     }
+}
+
+/// A digit as the verify gadget ([`WotsExt::wots_verify`]) reads its
+/// witness element: a script number (at most 4 bytes, little-endian, its
+/// sign the last byte's top bit; minimal or not, as minimal encoding is
+/// only policy in tapscript), then `OP_MIN 15`. So `[0x10]`, and every
+/// positive above it, is 15, and `[0x80]`, negative zero, is 0. None
+/// where the script fails: a negative digit, or an element longer than a
+/// number.
+pub fn script_digit(item: &[u8]) -> Option<u8> {
+    let Some((&last, rest)) = item.split_last() else {
+        return Some(0);
+    };
+    if item.len() > 4 {
+        return None;
+    }
+    if last & 0x80 != 0 {
+        return (last == 0x80 && rest.iter().all(|b| *b == 0)).then_some(0);
+    }
+    let value = item.iter().rev().fold(0u32, |v, b| (v << 8) | u32::from(*b));
+    Some(value.min(MAX_DIGIT) as u8)
 }
 
 fn scriptnum(d: u8) -> Vec<u8> {
@@ -371,6 +391,40 @@ mod tests {
         forged.digits[5] += 1;
         forged.hashes[5] = hash160(&forged.hashes[5]);
         assert!(pk.verify(&forged).is_err());
+    }
+
+    #[test]
+    fn a_digit_reads_as_the_script_reads_it() {
+        for (item, digit) in [
+            (&[][..], Some(0)),
+            (&[0][..], Some(0)),
+            (&[0x80][..], Some(0)),
+            (&[0, 0, 0, 0x80][..], Some(0)),
+            (&[7][..], Some(7)),
+            (&[7, 0][..], Some(7)),
+            (&[15][..], Some(15)),
+            (&[16][..], Some(15)),
+            (&[0x7f][..], Some(15)),
+            (&[0, 1][..], Some(15)),
+            (&[0xff, 0xff, 0xff, 0x7f][..], Some(15)),
+            (&[0, 0x80, 0][..], Some(15)),
+            (&[0x81][..], None),
+            (&[1, 0x80][..], None),
+            (&[0, 0, 0, 0, 0][..], None),
+        ] {
+            assert_eq!(script_digit(item), digit, "{item:?}");
+        }
+        // a signature's 15s written as 16: the same signature
+        let ps = WotsParams::for_bytes(4);
+        let sig = WotsSecret::from_entropy(ps, [9u8; 32]).sign(&0x0f3f_f0ffu32.to_be_bytes()).unwrap();
+        let mut items = sig.consumption_order();
+        let fifteen = items.iter().position(|i| i.as_slice() == [15]).unwrap();
+        items[fifteen] = vec![16];
+        assert_eq!(WotsSig::from_consumption_order(ps, &items).unwrap(), sig);
+        // a negative digit, or too few elements: none
+        items[fifteen] = vec![0x81];
+        assert!(WotsSig::from_consumption_order(ps, &items).is_err());
+        assert!(WotsSig::from_consumption_order(ps, &items[2..]).is_err());
     }
 
     #[test]
